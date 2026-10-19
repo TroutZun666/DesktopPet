@@ -4,8 +4,8 @@ import math
 import time
 import datetime  
 from PyQt5.QtWidgets import QApplication, QWidget, QLabel, QMenu, QAction
-from PyQt5.QtGui import QPixmap, QTransform, QPainter, QColor, QFont, QPainterPath
-from PyQt5.QtCore import Qt, QTimer, QRectF  # 引入 QRectF 用于精确绘制
+from PyQt5.QtGui import QPixmap, QTransform, QPainter, QColor, QFont, QPainterPath, QTextDocument, QTextOption
+from PyQt5.QtCore import Qt, QTimer, QRectF
 
 # ================= 配置参数 =================
 IMAGE_PATH = "pet.png"        
@@ -34,21 +34,33 @@ IDLE_QUOTES = [
 ]
 
 SCENE_QUOTES = {
-    "click": ["我是一条爱吃白饭的大肥鱼！", "咕噜？你戳我干嘛？", "哎呀，别戳啦，会变胖的！", "白饭...哪里有白饭？"],
+    "click": ["我是一条爱吃白饭的大肥鱼！", "咕噜？你戳我干嘛？", "哎呀，别戳啦，会变胖的！", "白饭...哪里有白饭？","好桌宠..."],
     "drag": ["哇啊！你要干嘛！", "放、放开我！", "救命呀！被抓住了！"],
     "land": ["不要甩我啦，头晕！", "哎哟...我的屁股...", "落地满分！", "再也不飞了，好可怕..."],
     "turn": ["哎呀，没路了...", "这里过不去啦。", "碰壁了..."]
 }
+
 
 class SpeechBubble(QWidget):
     def __init__(self):
         super().__init__()
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool | Qt.WindowTransparentForInput)
         self.setAttribute(Qt.WA_TranslucentBackground)
+        
         self.text = ""
         self.arrow_pos = 0.5  
-        # 字体稍微调大了一点点，更清楚
+        self.tail_dir = 1 # 1: 尾巴朝下 (气泡在上方), -1: 尾巴朝上 (气泡在下方)
+        
         self.font = QFont("Microsoft YaHei", 10, QFont.Bold)
+        
+        # 使用 QTextDocument 进行精确的文本排版
+        self.doc = QTextDocument()
+        self.doc.setDefaultFont(self.font)
+        self.doc.setDocumentMargin(0) # 移除默认边距
+        
+        # 文本居中
+        opt = QTextOption(Qt.AlignCenter)
+        self.doc.setDefaultTextOption(opt)
         
         self.hide_timer = QTimer(self)
         self.hide_timer.setSingleShot(True)
@@ -58,28 +70,29 @@ class SpeechBubble(QWidget):
         self.text = text
         self.hide_timer.stop()
         
-        # 【修复核心1】计算折行后的文本真实尺寸
-        max_text_width = 220  # 限制文字区域的最大宽度
-        font_metrics = self.fontMetrics()
+        self.doc.setPlainText(self.text)
+        # 限制最大宽度为 220 像素，超过自动换行
+        self.doc.setTextWidth(220) 
         
-        # boundingRect 会根据最大宽度自动计算折行后所需的高度
-        text_rect = font_metrics.boundingRect(
-            0, 0, max_text_width, 1000, Qt.TextWordWrap, self.text
-        )
+        # 获取精确的文本尺寸
+        doc_size = self.doc.size()
         
-        # 加上内边距 (padding)
-        self.padding_x = 15
-        self.padding_y = 12
+        self.padding_x = 20
+        self.padding_y = 15
         
-        self.bubble_width = text_rect.width() + self.padding_x * 2
-        self.bubble_height = text_rect.height() + self.padding_y * 2
-        self.tail_height = 10 
+        self.bubble_width = max(doc_size.width() + self.padding_x * 2, 80)
+        self.bubble_height = doc_size.height() + self.padding_y * 2
+        self.tail_height = 12
         
-        # 调整窗口总大小
         self.resize(int(self.bubble_width), int(self.bubble_height + self.tail_height))
         self.show()
         self.update() 
         self.hide_timer.start(duration)
+
+    def set_tail_direction(self, direction):
+        if self.tail_dir != direction:
+            self.tail_dir = direction
+            self.update()
 
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -87,36 +100,36 @@ class SpeechBubble(QWidget):
         
         path = QPainterPath()
         rect_width = self.width()
+        
+        # 主体高度 (总高度减去尾巴高度)
         rect_height = self.height() - self.tail_height
         
-        # 绘制圆角矩形背景
-        path.addRoundedRect(0, 0, rect_width, rect_height, 10, 10)
+        # 如果尾巴朝上，主体需要往下偏移给尾巴留出空间
+        offset_y = self.tail_height if self.tail_dir == -1 else 0
+        
+        # 绘制圆角矩形主体
+        path.addRoundedRect(0, offset_y, rect_width, rect_height, 12, 12)
         
         # 绘制小尾巴
         tail_x = rect_width * self.arrow_pos
-        path.moveTo(tail_x - 8, rect_height)
-        path.lineTo(tail_x, self.height())
-        path.lineTo(tail_x + 8, rect_height)
+        if self.tail_dir == 1: # 尾巴在底部，指向下
+            path.moveTo(tail_x - 8, offset_y + rect_height)
+            path.lineTo(tail_x, self.height())
+            path.lineTo(tail_x + 8, offset_y + rect_height)
+        else: # 尾巴在顶部，指向上
+            path.moveTo(tail_x - 8, offset_y)
+            path.lineTo(tail_x, 0)
+            path.lineTo(tail_x + 8, offset_y)
         path.closeSubpath()
         
+        # 绘制气泡背景
         painter.setPen(QColor(100, 150, 200))
         painter.setBrush(QColor(255, 255, 255, 240))
         painter.drawPath(path)
 
-        # 【修复核心2】绘制文字时启用自动换行，并精准定位
-        painter.setPen(QColor(50, 50, 50))
-        painter.setFont(self.font)
-        
-        # 计算文字绘制的矩形区域
-        text_draw_rect = QRectF(
-            self.padding_x, 
-            self.padding_y, 
-            rect_width - self.padding_x * 2, 
-            rect_height - self.padding_y * 2
-        )
-        
-        # 使用 AlignCenter 和 TextWordWrap 确保文字居中且自动折行
-        painter.drawText(text_draw_rect, Qt.AlignCenter | Qt.TextWordWrap, self.text)
+        # 绘制文字
+        painter.translate(self.padding_x, self.padding_y + offset_y)
+        self.doc.drawContents(painter) # 让 QTextDocument 负责绘制，绝不会超出范围
 
 
 class DesktopPet(QWidget):
@@ -190,16 +203,27 @@ class DesktopPet(QWidget):
         self.idle_offset = -10 
 
     def update_bubble_position(self):
+        """【核心修复】智能判断气泡位置，防止超出屏幕上下边缘"""
         if self.bubble.isVisible():
             bubble_x = self.pos_x + (self.width() / 2) - (self.bubble.width() / 2)
-            bubble_y = self.pos_y - self.bubble.height() - 5
             
-            # 【修复核心3】防止气泡变宽后超出屏幕左右边缘
+            # 默认尝试把气泡放在宠物头顶
+            bubble_y = self.pos_y - self.bubble.height() - 5
+            tail_dir = 1 # 尾巴朝下
+            
+            # 如果气泡的顶部超出了屏幕顶部（< 10 像素），则翻转到宠物下方
+            if bubble_y < 10:
+                bubble_y = self.pos_y + self.height() + 5
+                tail_dir = -1 # 尾巴朝上
+                
+            # 防止左右超出屏幕
             if bubble_x < 10:
                 bubble_x = 10
             elif bubble_x + self.bubble.width() > self.screen_rect.width() - 10:
                 bubble_x = self.screen_rect.width() - self.bubble.width() - 10
                 
+            # 更新气泡的尾巴朝向并移动
+            self.bubble.set_tail_direction(tail_dir)
             self.bubble.move(int(bubble_x), int(bubble_y))
 
     def set_direction(self, direction):
@@ -344,7 +368,7 @@ class DesktopPet(QWidget):
             
             now = datetime.datetime.now()
             # 格式：2023年10月27日 15:30:00
-            time_str = f"现在是 {now.strftime('%Y年%m月%d日 %H:%M:%S')} 啦"
+            time_str = f"现在是\n {now.strftime('%Y年%m月%d日 %H:%M:%S')} \n啦"
             
             self.force_speak(time_str, duration=4000)
             self.idle_offset = -15
