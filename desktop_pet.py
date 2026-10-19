@@ -5,7 +5,7 @@ import time
 import datetime  
 from PyQt5.QtWidgets import QApplication, QWidget, QLabel, QMenu, QAction
 from PyQt5.QtGui import QPixmap, QTransform, QPainter, QColor, QFont, QPainterPath
-from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtCore import Qt, QTimer, QRectF  # 引入 QRectF 用于精确绘制
 
 # ================= 配置参数 =================
 IMAGE_PATH = "pet.png"        
@@ -47,7 +47,9 @@ class SpeechBubble(QWidget):
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.text = ""
         self.arrow_pos = 0.5  
+        # 字体稍微调大了一点点，更清楚
         self.font = QFont("Microsoft YaHei", 10, QFont.Bold)
+        
         self.hide_timer = QTimer(self)
         self.hide_timer.setSingleShot(True)
         self.hide_timer.timeout.connect(self.hide)
@@ -55,12 +57,25 @@ class SpeechBubble(QWidget):
     def show_text(self, text, duration=3000):
         self.text = text
         self.hide_timer.stop()
+        
+        # 【修复核心1】计算折行后的文本真实尺寸
+        max_text_width = 220  # 限制文字区域的最大宽度
         font_metrics = self.fontMetrics()
-        text_width = font_metrics.horizontalAdvance(self.text)
-        text_height = font_metrics.height()
-        self.bubble_width = max(text_width + 30, 80) 
-        self.bubble_height = text_height + 20
+        
+        # boundingRect 会根据最大宽度自动计算折行后所需的高度
+        text_rect = font_metrics.boundingRect(
+            0, 0, max_text_width, 1000, Qt.TextWordWrap, self.text
+        )
+        
+        # 加上内边距 (padding)
+        self.padding_x = 15
+        self.padding_y = 12
+        
+        self.bubble_width = text_rect.width() + self.padding_x * 2
+        self.bubble_height = text_rect.height() + self.padding_y * 2
         self.tail_height = 10 
+        
+        # 调整窗口总大小
         self.resize(int(self.bubble_width), int(self.bubble_height + self.tail_height))
         self.show()
         self.update() 
@@ -69,21 +84,39 @@ class SpeechBubble(QWidget):
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
+        
         path = QPainterPath()
         rect_width = self.width()
         rect_height = self.height() - self.tail_height
+        
+        # 绘制圆角矩形背景
         path.addRoundedRect(0, 0, rect_width, rect_height, 10, 10)
+        
+        # 绘制小尾巴
         tail_x = rect_width * self.arrow_pos
         path.moveTo(tail_x - 8, rect_height)
         path.lineTo(tail_x, self.height())
         path.lineTo(tail_x + 8, rect_height)
         path.closeSubpath()
+        
         painter.setPen(QColor(100, 150, 200))
         painter.setBrush(QColor(255, 255, 255, 240))
         painter.drawPath(path)
+
+        # 【修复核心2】绘制文字时启用自动换行，并精准定位
         painter.setPen(QColor(50, 50, 50))
         painter.setFont(self.font)
-        painter.drawText(0, 0, rect_width, rect_height, Qt.AlignCenter, self.text)
+        
+        # 计算文字绘制的矩形区域
+        text_draw_rect = QRectF(
+            self.padding_x, 
+            self.padding_y, 
+            rect_width - self.padding_x * 2, 
+            rect_height - self.padding_y * 2
+        )
+        
+        # 使用 AlignCenter 和 TextWordWrap 确保文字居中且自动折行
+        painter.drawText(text_draw_rect, Qt.AlignCenter | Qt.TextWordWrap, self.text)
 
 
 class DesktopPet(QWidget):
@@ -120,8 +153,6 @@ class DesktopPet(QWidget):
         self.last_mouse_pos = None
         self.drag_vx = 0.0
         self.drag_vy = 0.0
-
-        # 【新增标记】用于区分双击后的松开
         self.just_double_clicked = False 
 
         self.idle_offset = 0.0
@@ -162,10 +193,13 @@ class DesktopPet(QWidget):
         if self.bubble.isVisible():
             bubble_x = self.pos_x + (self.width() / 2) - (self.bubble.width() / 2)
             bubble_y = self.pos_y - self.bubble.height() - 5
-            if bubble_x < 0:
-                bubble_x = 0
-            elif bubble_x + self.bubble.width() > self.screen_rect.width():
-                bubble_x = self.screen_rect.width() - self.bubble.width()
+            
+            # 【修复核心3】防止气泡变宽后超出屏幕左右边缘
+            if bubble_x < 10:
+                bubble_x = 10
+            elif bubble_x + self.bubble.width() > self.screen_rect.width() - 10:
+                bubble_x = self.screen_rect.width() - self.bubble.width() - 10
+                
             self.bubble.move(int(bubble_x), int(bubble_y))
 
     def set_direction(self, direction):
@@ -235,13 +269,11 @@ class DesktopPet(QWidget):
 
         self.update_bubble_position()
 
-    # ================= 鼠标交互核心 =================
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
             self.press_time = time.time()
             self.press_pos = event.pos()
             self.is_dragging = False
-            
             self.drag_position = event.globalPos() - self.frameGeometry().topLeft()
             self.last_mouse_pos = event.globalPos()
             self.drag_vx = 0.0
@@ -277,7 +309,6 @@ class DesktopPet(QWidget):
         if event.button() == Qt.LeftButton:
             click_duration = time.time() - self.press_time
             
-            # 【修复Bug核心1】如果是双击引发的第二次松开，直接重置状态跳过单击逻辑
             if self.just_double_clicked:
                 self.just_double_clicked = False
                 self.is_dragging = False
@@ -308,12 +339,13 @@ class DesktopPet(QWidget):
 
     def mouseDoubleClickEvent(self, event):
         if event.button() == Qt.LeftButton:
-            # 【修复Bug核心2】设置标记位，告诉 release 事件“刚才双击了”
             self.just_double_clicked = True
-            
             self.single_click_timer.stop()
+            
             now = datetime.datetime.now()
+            # 格式：2023年10月27日 15:30:00
             time_str = f"现在是 {now.strftime('%Y年%m月%d日 %H:%M:%S')} 啦"
+            
             self.force_speak(time_str, duration=4000)
             self.idle_offset = -15
             event.accept()
