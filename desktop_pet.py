@@ -1,8 +1,9 @@
 import sys
 import random
 import math
+import time  # 引入时间库用于判断点击
 from PyQt5.QtWidgets import QApplication, QWidget, QLabel, QMenu, QAction
-from PyQt5.QtGui import QPixmap, QTransform  # 引入 QTransform 用于翻转图片
+from PyQt5.QtGui import QPixmap, QTransform, QPainter, QColor, QFont, QPainterPath
 from PyQt5.QtCore import Qt, QTimer
 
 # ================= 配置参数 =================
@@ -22,7 +23,110 @@ STAND_TIME_MIN = 180
 STAND_TIME_MAX = 600           
 WALK_TIME_MIN = 120            
 WALK_TIME_MAX = 300            
+
+# 说话参数
+TALK_INTERVAL_MIN = 8000       
+TALK_INTERVAL_MAX = 20000      
+
+# ================= 台词库 =================
+IDLE_QUOTES = [
+    "今天也是摸鱼的一天~",
+    "咕噜咕噜...",
+    "肚子饿了，想吃小鱼干...",
+    "你在忙什么呢？",
+    "好困，想睡觉了 zzz",
+    "要一起玩吗？",
+    "我可是最可爱的桌面宠物！",
+    "水好少，我要干涸了..."
+]
+
+SCENE_QUOTES = {
+    "click": [     # 【新增】被点击（戳）的瞬间
+        "我是一条爱吃白饭的大肥鱼！",
+        "咕噜？你戳我干嘛？",
+        "哎呀，别戳啦，会变胖的！",
+        "白饭...哪里有白饭？"
+    ],
+    "drag": [      
+        "哇啊！你要干嘛！",
+        "放、放开我！",
+        "救命呀！被抓住了！"
+    ],
+    "land": [      
+        "不要甩我啦，头晕！",
+        "哎哟...我的屁股...",
+        "落地满分！",
+        "再也不飞了，好可怕..."
+    ],
+    "turn": [      
+        "哎呀，没路了...",
+        "这里过不去啦。",
+        "碰壁了..."
+    ]
+}
 # ============================================
+
+class SpeechBubble(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.setWindowFlags(
+            Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | 
+            Qt.Tool | Qt.WindowTransparentForInput
+        )
+        self.setAttribute(Qt.WA_TranslucentBackground)
+
+        self.text = ""
+        self.arrow_pos = 0.5  
+        self.font = QFont("Microsoft YaHei", 10, QFont.Bold)
+        
+        self.hide_timer = QTimer(self)
+        self.hide_timer.setSingleShot(True)
+        self.hide_timer.timeout.connect(self.hide)
+
+    def show_text(self, text, duration=3000):
+        self.text = text
+        self.hide_timer.stop()
+        
+        font_metrics = self.fontMetrics()
+        text_width = font_metrics.horizontalAdvance(self.text)
+        text_height = font_metrics.height()
+        
+        self.bubble_width = max(text_width + 30, 80) 
+        self.bubble_height = text_height + 20
+        self.tail_height = 10 
+        
+        self.resize(int(self.bubble_width), int(self.bubble_height + self.tail_height))
+        self.show()
+        self.update() 
+        self.hide_timer.start(duration)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+
+        bg_color = QColor(255, 255, 255, 240)
+        border_color = QColor(100, 150, 200)
+
+        path = QPainterPath()
+        rect_width = self.width()
+        rect_height = self.height() - self.tail_height
+        
+        path.addRoundedRect(0, 0, rect_width, rect_height, 10, 10)
+        
+        tail_x = rect_width * self.arrow_pos
+        path.moveTo(tail_x - 8, rect_height)
+        path.lineTo(tail_x, self.height())
+        path.lineTo(tail_x + 8, rect_height)
+        path.closeSubpath()
+
+        painter.setPen(border_color)
+        painter.setBrush(bg_color)
+        painter.drawPath(path)
+
+        painter.setPen(QColor(50, 50, 50))
+        painter.setFont(self.font)
+        painter.drawText(0, 0, rect_width, rect_height, Qt.AlignCenter, self.text)
+
 
 class DesktopPet(QWidget):
     def __init__(self):
@@ -32,19 +136,12 @@ class DesktopPet(QWidget):
         self.setAttribute(Qt.WA_TranslucentBackground)
 
         self.label = QLabel(self)
-        
-        # ================= 核心修改：准备两个方向的图片 =================
-        # 1. 原图（假设原图默认朝左）
         self.pixmap_left = QPixmap(IMAGE_PATH).scaledToHeight(TARGET_HEIGHT, Qt.SmoothTransformation)
-        
-        # 2. 水平翻转图（朝右）
-        transform = QTransform().scale(-1, 1) # 沿Y轴翻转
+        transform = QTransform().scale(-1, 1)
         self.pixmap_right = self.pixmap_left.transformed(transform)
         
-        # 默认显示原图
         self.label.setPixmap(self.pixmap_left)
         self.resize(self.pixmap_left.size())
-        # ================================================================
 
         self.screen_rect = QApplication.primaryScreen().availableGeometry()
         self.floor_y = self.screen_rect.height() - self.height()
@@ -55,39 +152,69 @@ class DesktopPet(QWidget):
         self.vy = 0.0
         
         self.state = "idle"        
-        
-        # AI 变量
         self.ai_action = "standing" 
         self.action_timer = random.randint(STAND_TIME_MIN, STAND_TIME_MAX)
-        self.current_direction = -1  # 当前朝向：-1 为左，1 为右
+        self.current_direction = -1  
         self.walk_direction = -1     
         self.walk_bounce = 0.0      
 
-        # 拖拽变量
+        # 鼠标状态记录变量
+        self.is_dragging = False
+        self.press_time = 0
+        self.press_pos = None
         self.drag_position = None
         self.last_mouse_pos = None
         self.drag_vx = 0.0
         self.drag_vy = 0.0
 
-        # 浮动变量
         self.idle_offset = 0.0
         self.idle_direction = 1
 
         self.move(int(self.pos_x), int(self.pos_y))
 
+        self.bubble = SpeechBubble()
+        self.talk_timer = QTimer(self)
+        self.talk_timer.timeout.connect(self.random_speak)
+        self.reset_talk_timer()
+
         self.game_loop = QTimer(self)
         self.game_loop.timeout.connect(self.update_physics)
         self.game_loop.start(16)
 
-    def set_direction(self, direction):
-        """根据方向切换图片"""
-        if direction == self.current_direction:
-            return # 方向没变就不重复渲染
+    def reset_talk_timer(self):
+        next_time = random.randint(TALK_INTERVAL_MIN, TALK_INTERVAL_MAX)
+        self.talk_timer.start(next_time)
+
+    def random_speak(self):
+        if self.state == "idle" and self.ai_action == "standing":
+            text = random.choice(IDLE_QUOTES)
+            self.bubble.show_text(text, duration=random.randint(2000, 4000))
+        self.reset_talk_timer()
+
+    def force_speak(self, text_list):
+        text = random.choice(text_list)
+        self.bubble.show_text(text, duration=2500)
+        self.reset_talk_timer()
+
+    def update_bubble_position(self):
+        if self.bubble.isVisible():
+            bubble_x = self.pos_x + (self.width() / 2) - (self.bubble.width() / 2)
+            bubble_y = self.pos_y - self.bubble.height() - 5
             
+            if bubble_x < 0:
+                bubble_x = 0
+            elif bubble_x + self.bubble.width() > self.screen_rect.width():
+                bubble_x = self.screen_rect.width() - self.bubble.width()
+                
+            self.bubble.move(int(bubble_x), int(bubble_y))
+
+    def set_direction(self, direction):
+        if direction == self.current_direction:
+            return 
         self.current_direction = direction
-        if direction == 1: # 向右
+        if direction == 1: 
             self.label.setPixmap(self.pixmap_right)
-        else:              # 向左
+        else:              
             self.label.setPixmap(self.pixmap_left)
 
     def update_physics(self):
@@ -114,6 +241,9 @@ class DesktopPet(QWidget):
                     self.state = "idle"
                     self.ai_action = "standing"
                     self.action_timer = random.randint(STAND_TIME_MIN, STAND_TIME_MAX)
+                    
+                    if hasattr(self, 'fall_start_y') and self.fall_start_y - self.floor_y > 50:
+                        self.force_speak(SCENE_QUOTES["land"])
             
             self.move(int(self.pos_x), int(self.pos_y))
 
@@ -123,9 +253,7 @@ class DesktopPet(QWidget):
             if self.action_timer <= 0:
                 if self.ai_action == "standing":
                     self.ai_action = "walking"
-                    # 随机决定新方向
                     self.walk_direction = random.choice([-1, 1])
-                    # 切换图像
                     self.set_direction(self.walk_direction) 
                     self.action_timer = random.randint(WALK_TIME_MIN, WALK_TIME_MAX)
                 else:
@@ -142,67 +270,97 @@ class DesktopPet(QWidget):
             elif self.ai_action == "walking":
                 self.pos_x += WALK_SPEED * self.walk_direction
                 
-                # 撞到边缘掉头
                 if self.pos_x <= self.screen_rect.left():
                     self.pos_x = self.screen_rect.left()
                     self.walk_direction = 1
-                    self.set_direction(self.walk_direction) # 掉头时翻转图像
+                    self.set_direction(self.walk_direction)
+                    self.force_speak(SCENE_QUOTES["turn"])
                 elif self.pos_x >= self.screen_rect.right() - self.width():
                     self.pos_x = self.screen_rect.right() - self.width()
                     self.walk_direction = -1
-                    self.set_direction(self.walk_direction) # 掉头时翻转图像
+                    self.set_direction(self.walk_direction)
+                    self.force_speak(SCENE_QUOTES["turn"])
                 
                 self.walk_bounce += 0.2
                 bounce_y = abs(math.sin(self.walk_bounce)) * 10 
-                
                 self.move(int(self.pos_x), int(self.floor_y - bounce_y))
 
+        self.update_bubble_position()
+
+    # ================= 鼠标交互核心修改 =================
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
-            self.state = "dragging"
+            # 记录按下时的时间和位置
+            self.press_time = time.time()
+            self.press_pos = event.pos()
+            self.is_dragging = False  # 初始假设不是拖拽
+            
             self.drag_position = event.globalPos() - self.frameGeometry().topLeft()
             self.last_mouse_pos = event.globalPos()
             self.drag_vx = 0.0
             self.drag_vy = 0.0
+            self.fall_start_y = self.pos_y
             event.accept()
         elif event.button() == Qt.RightButton:
             self.show_context_menu(event.globalPos())
 
     def mouseMoveEvent(self, event):
-        if event.buttons() == Qt.LeftButton and self.state == "dragging":
-            current_mouse_pos = event.globalPos()
-            if self.last_mouse_pos:
-                self.drag_vx = current_mouse_pos.x() - self.last_mouse_pos.x()
-                self.drag_vy = current_mouse_pos.y() - self.last_mouse_pos.y()
-            
-            self.last_mouse_pos = current_mouse_pos
-            new_pos = current_mouse_pos - self.drag_position
-            
-            self.pos_x = float(new_pos.x())
-            self.pos_y = float(new_pos.y())
-            self.move(new_pos)
-            event.accept()
+        if event.buttons() == Qt.LeftButton:
+            # 如果鼠标移动距离超过 5 像素，才真正判定为拖拽
+            if not self.is_dragging:
+                if (event.pos() - self.press_pos).manhattanLength() > 5:
+                    self.is_dragging = True
+                    self.state = "dragging"
+                    # 只有真正开始拖拽时，才喊“放开我”
+                    self.force_speak(SCENE_QUOTES["drag"])
+
+            if self.is_dragging:
+                current_mouse_pos = event.globalPos()
+                if self.last_mouse_pos:
+                    self.drag_vx = current_mouse_pos.x() - self.last_mouse_pos.x()
+                    self.drag_vy = current_mouse_pos.y() - self.last_mouse_pos.y()
+                
+                self.last_mouse_pos = current_mouse_pos
+                new_pos = current_mouse_pos - self.drag_position
+                
+                self.pos_x = float(new_pos.x())
+                self.pos_y = float(new_pos.y())
+                self.move(new_pos)
+                self.update_bubble_position()
+                event.accept()
 
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.LeftButton:
+            click_duration = time.time() - self.press_time
+            
+            # 如果没有发生拖拽（is_dragging为False），且按压时间很短，说明是“点击”
+            if not self.is_dragging and click_duration < 0.3:
+                # ---- 场景：点击（戳戳） ----
+                self.force_speak(SCENE_QUOTES["click"])
+                # 可以加一点点击的小反馈，比如微微跳一下
+                self.idle_offset = -10 
+                event.accept()
+                return
+
+            # 以下是原有的拖拽松开逻辑
             self.drag_position = None
-            if self.pos_y < self.floor_y - 5:
-                self.state = "falling"
-                self.vx = self.drag_vx * DRAG_INERTIA
-                self.vy = self.drag_vy * DRAG_INERTIA
-                
-                # 可选：如果被甩出去的速度很快，可以自动面朝飞行的方向
-                if abs(self.vx) > 5:
-                    new_dir = 1 if self.vx > 0 else -1
-                    self.set_direction(new_dir)
+            if self.is_dragging:
+                if self.pos_y < self.floor_y - 5:
+                    self.state = "falling"
+                    self.vx = self.drag_vx * DRAG_INERTIA
+                    self.vy = self.drag_vy * DRAG_INERTIA
                     
-            else:
-                self.pos_x = float(self.x())
-                self.pos_y = float(self.floor_y)
-                self.state = "idle"
-                self.ai_action = "standing"
-                self.action_timer = random.randint(STAND_TIME_MIN, STAND_TIME_MAX)
+                    if abs(self.vx) > 5:
+                        new_dir = 1 if self.vx > 0 else -1
+                        self.set_direction(new_dir)
+                else:
+                    self.pos_x = float(self.x())
+                    self.pos_y = float(self.floor_y)
+                    self.state = "idle"
+                    self.ai_action = "standing"
+                    self.action_timer = random.randint(STAND_TIME_MIN, STAND_TIME_MAX)
             event.accept()
+    # ====================================================
 
     def show_context_menu(self, pos):
         menu = QMenu(self)
